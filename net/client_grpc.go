@@ -76,8 +76,9 @@ func (g *grpcClient) getTimeoutContext(ctx context.Context) (context.Context, co
 	return context.WithDeadline(ctx, clientDeadline)
 }
 
-func (g *grpcClient) GetIdentity(ctx context.Context, p Peer, in *drand.IdentityRequest, opts ...CallOption) (*drand.Identity, error) {
-	var resp *drand.Identity
+func (g *grpcClient) GetIdentity(ctx context.Context, p Peer,
+	in *drand.IdentityRequest, opts ...CallOption) (*drand.IdentityResponse, error) {
+	var resp *drand.IdentityResponse
 	c, err := g.conn(p)
 	if err != nil {
 		return nil, err
@@ -232,19 +233,19 @@ func (g *grpcClient) SyncChain(ctx context.Context, p Peer, in *drand.SyncReques
 		for {
 			reply, err := stream.Recv()
 			if err == io.EOF {
-				log.DefaultLogger().Info("grpc client", "chain sync", "error", "eof", "to", p.Address())
-				fmt.Println(" --- STREAM EOF")
+				log.DefaultLogger().Infow("", "grpc client", "chain sync", "error", "eof", "to", p.Address())
+				log.DefaultLogger().Debugw(" --- STREAM EOF")
 				return
 			}
 			if err != nil {
-				log.DefaultLogger().Info("grpc client", "chain sync", "error", err, "to", p.Address())
-				fmt.Println(" --- STREAM ERR:", err)
+				log.DefaultLogger().Infow("", "grpc client", "chain sync", "error", err, "to", p.Address())
+				log.DefaultLogger().Debugw(fmt.Sprintf("--- STREAM ERR: %s", err))
 				return
 			}
 			select {
 			case <-ctx.Done():
-				log.DefaultLogger().Info("grpc client", "chain sync", "error", "context", ctx.Err(), "to", p.Address())
-				fmt.Println(" --- STREAM CONTEXT DONE")
+				log.DefaultLogger().Infow("", "grpc client", "chain sync", "error", "context done", "to", p.Address())
+				log.DefaultLogger().Debugw(" --- STREAM CONTEXT DONE")
 				return
 			default:
 				resp <- reply
@@ -267,6 +268,19 @@ func (g *grpcClient) Home(ctx context.Context, p Peer, in *drand.HomeRequest) (*
 	return resp, err
 }
 
+func (g *grpcClient) Status(ctx context.Context, p Peer, in *drand.StatusRequest, opts ...grpc.CallOption) (*drand.StatusResponse, error) {
+	var resp *drand.StatusResponse
+	c, err := g.conn(p)
+	if err != nil {
+		return nil, err
+	}
+	client := drand.NewProtocolClient(c)
+	ctx, cancel := g.getTimeoutContext(ctx)
+	defer cancel()
+	resp, err = client.Status(ctx, in, opts...)
+	return resp, err
+}
+
 // conn retrieve an already existing conn to the given peer or create a new one
 func (g *grpcClient) conn(p Peer) (*grpc.ClientConn, error) {
 	g.Lock()
@@ -274,7 +288,7 @@ func (g *grpcClient) conn(p Peer) (*grpc.ClientConn, error) {
 	var err error
 	c, ok := g.conns[p.Address()]
 	if !ok {
-		log.DefaultLogger().Debug("grpc client", "initiating", "to", p.Address(), "tls", p.IsTLS())
+		log.DefaultLogger().Debugw("", "grpc client", "initiating", "to", p.Address(), "tls", p.IsTLS())
 		if !p.IsTLS() {
 			c, err = grpc.Dial(p.Address(), append(g.opts, grpc.WithInsecure())...)
 			if err != nil {
@@ -288,7 +302,7 @@ func (g *grpcClient) conn(p Peer) (*grpc.ClientConn, error) {
 				creds := credentials.NewClientTLSFromCert(pool, "")
 				opts = append(opts, grpc.WithTransportCredentials(creds))
 			} else {
-				config := &tls.Config{}
+				config := &tls.Config{MinVersion: tls.VersionTLS12}
 				opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(config)))
 			}
 			c, err = grpc.Dial(p.Address(), opts...)

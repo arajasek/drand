@@ -25,6 +25,8 @@ type SyncManager struct {
 	store  chain.Store
 	info   *chain.Info
 	client net.ProtocolClient
+	// verifies the incoming beacon according to chain scheme
+	verifier *chain.Verifier
 	// period of the randomness generation
 	period time.Duration
 	// sync manager will renew sync if nothing happens for factor*period time
@@ -44,21 +46,30 @@ var syncExpiryFactor = 2
 // how much sync request do we allow to buffer
 var syncQueueRequest = 3
 
+type SyncConfig struct {
+	Log    log.Logger
+	Client net.ProtocolClient
+	Clock  cl.Clock
+	Store  chain.Store
+	Info   *chain.Info
+}
+
 // NewSyncManager returns a sync manager that will use the given store to store
 // newly synced beacon.
-func NewSyncManager(l log.Logger, store chain.Store, info *chain.Info, client net.ProtocolClient, clock cl.Clock) *SyncManager {
+func NewSyncManager(c *SyncConfig) *SyncManager {
 	return &SyncManager{
-		log:     l,
-		clock:   clock,
-		store:   store,
-		info:    info,
-		client:  client,
-		period:  info.Period,
-		factor:  syncExpiryFactor,
-		newReq:  make(chan requestInfo, syncQueueRequest),
-		newSync: make(chan *chain.Beacon, 1),
-		isDone:  false,
-		done:    make(chan bool, 1),
+		log:      c.Log,
+		clock:    c.Clock,
+		store:    c.Store,
+		info:     c.Info,
+		client:   c.Client,
+		period:   c.Info.Period,
+		verifier: c.Info.Verifier(),
+		factor:   syncExpiryFactor,
+		newReq:   make(chan requestInfo, syncQueueRequest),
+		newSync:  make(chan *chain.Beacon, 1),
+		isDone:   false,
+		done:     make(chan bool, 1),
 	}
 }
 
@@ -171,10 +182,10 @@ func (s *SyncManager) tryNode(global context.Context, upTo uint64, n net.Peer) b
 				"with_peer", n.Address(),
 				"from_round", last.Round+1,
 				"got_round", beaconPacket.GetRound())
-			beacon := protoToBeacon(beaconPacket)
+			beacon := chain.ProtoToBeacon(beaconPacket)
 
 			// verify the signature validity
-			if err := chain.VerifyBeacon(s.info.PublicKey, beacon); err != nil {
+			if err := s.verifier.VerifyBeacon(*beacon, s.info.PublicKey); err != nil {
 				s.log.Debug("sync_manager", "invalid_beacon", "with_peer", n.Address(), "round", beacon.Round, "err", err, fmt.Sprintf("%+v", beacon))
 				return false
 			}
@@ -234,7 +245,7 @@ func SyncChain(l log.Logger, store CallbackStore, req SyncRequest, stream SyncSt
 
 	var done = make(chan error, 1)
 	send := func(b *chain.Beacon) bool {
-		if err = stream.Send(beaconToProto(b)); err != nil {
+		if err = stream.Send(chain.BeaconToProto(b)); err != nil {
 			l.Debug("syncer", "streaming_send", "err", err)
 			done <- err
 			return false

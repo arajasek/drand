@@ -8,10 +8,62 @@ package drand;
 option go_package = "github.com/drand/drand/protobuf/drand";
 /*option go_package = "drand";*/
 
-message Empty {
+import "common/common.proto";
 
+// TODO make doc for these
+message DkgStatus{
+    uint32 status = 1;
 }
 
+message ReshareStatus{
+    uint32 status = 1;
+}
+
+message BeaconStatus{
+    uint32 status = 1;
+    bool is_running = 2;
+    bool is_stopped = 3;
+    bool is_started = 4;
+    bool is_serving = 5;
+}
+
+message ChainStoreStatus{
+    bool is_empty = 1;
+    uint64 last_round = 2;
+    uint64 length = 3;
+}
+
+message Address {
+    string address = 1;
+    bool tls = 2;
+}
+
+
+message StatusRequest {
+    // the check_conn contains the list of addresses to check connectivity to,
+    // i.e. calls Home() on it.
+    // If the field is absent or empty, then there is no connectivity checks.
+    repeated Address check_conn = 1;
+}
+
+
+// StatusResponse contains different indicators of the status of the local drand
+// node process and as well some view on the connectivity with other nodes if
+// ask during the StatusRequest.
+message StatusResponse {
+    DkgStatus dkg = 1;
+    ReshareStatus reshare = 2;
+    BeaconStatus beacon = 3;
+    ChainStoreStatus chain_store = 4;
+    map<string,bool> connections = 5;
+}
+
+
+message Empty {
+    common.Metadata metadata = 1;
+}
+
+// REMINDER: This fields should be kept in sync with IdentityResponse message
 message Identity {
     string address = 1;
     bytes key = 2;
@@ -40,12 +92,15 @@ message GroupPacket {
     repeated bytes dist_key = 7;
     // catchup_period in seconds
     uint32 catchup_period = 8;
+    string schemeID = 9;
+    common.Metadata metadata = 10;
 }
 message GroupRequest {
-
+    common.Metadata metadata = 1;
 }
 
 message ChainInfoRequest {
+    common.Metadata metadata = 1;
 }
 
 message ChainInfoPacket {
@@ -60,4 +115,7 @@ message ChainInfoPacket {
     bytes hash = 4;
     // hash of the genesis group
     bytes groupHash = 5;
+    // indicates a set of values the process will use to act in specific ways
+    string schemeID = 6;
+    common.Metadata metadata = 7;
 }

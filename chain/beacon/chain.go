@@ -24,6 +24,7 @@ type chainStore struct {
 	conf        *Config
 	client      net.ProtocolClient
 	syncm       *SyncManager
+	verifier    *chain.Verifier
 	crypto      *cryptoStore
 	ticker      *ticker
 	done        chan bool
@@ -44,14 +45,23 @@ func newChainStore(l log.Logger, cf *Config, cl net.ProtocolClient, c *cryptoSto
 	// we can register callbacks on it
 	cbs := NewCallbackStore(ds)
 	// we give the final append store to the sync manager
-	syncm := NewSyncManager(l, cbs, c.chain, cl, cf.Clock)
+	syncm := NewSyncManager(&SyncConfig{
+		Log:    l,
+		Store:  cbs,
+		Info:   c.chain,
+		Client: cl,
+		Clock:  cf.Clock,
+	})
 	go syncm.Run()
+	verifier := chain.NewVerifier(cf.Group.Scheme)
+
 	cs := &chainStore{
 		CallbackStore:   cbs,
 		l:               l,
 		conf:            cf,
 		client:          cl,
 		syncm:           syncm,
+		verifier:        verifier,
 		crypto:          c,
 		ticker:          t,
 		done:            make(chan bool, 1),
@@ -89,12 +99,13 @@ var partialCacheStoreLimit = 3
 // runAggregator runs a continuous loop that tries to aggregate partial
 // signatures when it can
 func (c *chainStore) runAggregator() {
+	beaconID := c.conf.Group.ID
 	lastBeacon, err := c.Last()
 	if err != nil {
-		c.l.Fatal("chain_aggregator", "loading", "last_beacon", err)
+		c.l.Fatalw("", "beacon_id", beaconID, "chain_aggregator", "loading", "last_beacon", err)
 	}
 
-	var cache = newPartialCache(c.l)
+	var cache = newPartialCache(c.l, beaconID)
 	for {
 		select {
 		case <-c.done:
@@ -111,7 +122,7 @@ func (c *chainStore) runAggregator() {
 			shouldStore := isNotInPast && isNotTooFar
 			// check if we can reconstruct
 			if !shouldStore {
-				c.l.Debug("ignoring_partial", partial.p.GetRound(), "last_beacon_stored", lastBeacon.Round)
+				c.l.Debugw("", "beacon_id", beaconID, "ignoring_partial", partial.p.GetRound(), "last_beacon_stored", lastBeacon.Round)
 				break
 			}
 			// NOTE: This line means we can only verify partial signatures of
@@ -124,23 +135,25 @@ func (c *chainStore) runAggregator() {
 			cache.Append(partial.p)
 			roundCache := cache.GetRoundCache(partial.p.GetRound(), partial.p.GetPreviousSig())
 			if roundCache == nil {
-				c.l.Error("store_partial", partial.addr, "no_round_cache", partial.p.GetRound())
+				c.l.Errorw("", "beacon_id", beaconID, "store_partial", partial.addr, "no_round_cache", partial.p.GetRound())
 				break
 			}
 
-			c.l.Debug("store_partial", partial.addr, "round", roundCache.round, "len_partials", fmt.Sprintf("%d/%d", roundCache.Len(), thr))
+			c.l.Debugw("", "beacon_id", beaconID, "store_partial", partial.addr,
+				"round", roundCache.round, "len_partials", fmt.Sprintf("%d/%d", roundCache.Len(), thr))
 			if roundCache.Len() < thr {
 				break
 			}
 
-			msg := roundCache.Msg()
+			msg := c.verifier.DigestMessage(roundCache.round, roundCache.prev)
+
 			finalSig, err := key.Scheme.Recover(c.crypto.GetPub(), msg, roundCache.Partials(), thr, n)
 			if err != nil {
-				c.l.Debug("invalid_recovery", err, "round", pRound, "got", fmt.Sprintf("%d/%d", roundCache.Len(), n))
+				c.l.Debugw("", "beacon_id", beaconID, "invalid_recovery", err, "round", pRound, "got", fmt.Sprintf("%d/%d", roundCache.Len(), n))
 				break
 			}
 			if err := key.Scheme.VerifyRecovered(c.crypto.GetPub().Commit(), msg, finalSig); err != nil {
-				c.l.Error("invalid_sig", err, "round", pRound)
+				c.l.Errorw("", "beacon_id", beaconID, "invalid_sig", err, "round", pRound)
 				break
 			}
 			cache.FlushRounds(partial.p.GetRound())
@@ -149,14 +162,14 @@ func (c *chainStore) runAggregator() {
 				PreviousSig: roundCache.prev,
 				Signature:   finalSig,
 			}
-			c.l.Info("aggregated_beacon", newBeacon.Round)
+			c.l.Infow("", "beacon_id", beaconID, "aggregated_beacon", newBeacon.Round)
 			if c.tryAppend(lastBeacon, newBeacon) {
 				lastBeacon = newBeacon
 				break
 			}
 			// XXX store them for lfutur usage if it's a later round than what
 			// we have
-			c.l.Debug("new_aggregated", "not_appendable", "last", lastBeacon.String(), "new", newBeacon.String())
+			c.l.Debugw("", "beacon_id", beaconID, "new_aggregated", "not_appendable", "last", lastBeacon.String(), "new", newBeacon.String())
 			if c.shouldSync(lastBeacon, newBeacon) {
 				peers := toPeers(c.crypto.GetGroup().Nodes)
 				c.syncm.RequestSync(peers, newBeacon.Round)
@@ -171,9 +184,11 @@ func (c *chainStore) tryAppend(last, newB *chain.Beacon) bool {
 		// quick check before trying to compare bytes
 		return false
 	}
+
+	beaconID := c.conf.Group.ID
 	if err := c.CallbackStore.Put(newB); err != nil {
 		// if round is ok but bytes are different, error will be raised
-		c.l.Error("chain_store", "error storing beacon", "err", err)
+		c.l.Errorw("", "beacon_id", beaconID, "chain_store", "error storing beacon", "err", err)
 		return false
 	}
 	select {

@@ -1,13 +1,14 @@
 package key
 
 import (
-	"io/ioutil"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/drand/drand/common"
+	"github.com/drand/drand/common/scheme"
 	"github.com/drand/drand/protobuf/drand"
-	kyber "github.com/drand/kyber"
+	"github.com/drand/kyber"
 	"github.com/drand/kyber/util/random"
 	"github.com/stretchr/testify/require"
 )
@@ -34,9 +35,10 @@ func TestGroupProtobuf(t *testing.T) {
 	n := 9
 	thr := 5
 	ids := newIds(n)
+	sch := scheme.GetSchemeFromEnv()
 
 	dpub := []kyber.Point{KeyGroup.Point().Pick(random.New())}
-	group := LoadGroup(ids, 1, &DistPublic{dpub}, 30*time.Second, 61)
+	group := LoadGroup(ids, 1, &DistPublic{dpub}, 30*time.Second, 61, sch, "test_beacon")
 	group.Threshold = thr
 	group.Period = time.Second * 4
 	group.GenesisTime = time.Now().Add(10 * time.Second).Unix()
@@ -73,8 +75,9 @@ func TestGroupProtobuf(t *testing.T) {
 		isErr:  false,
 	})
 
+	version := common.Version{Major: 0, Minor: 0, Patch: 0}
 	for i, tv := range vectors {
-		protoGroup := tv.group.ToProto()
+		protoGroup := tv.group.ToProto(version)
 		if tv.change != nil {
 			tv.change(protoGroup)
 		}
@@ -99,7 +102,9 @@ func TestGroupProtobuf(t *testing.T) {
 
 func TestGroupUnsignedIdentities(t *testing.T) {
 	ids := newIds(5)
-	group := LoadGroup(ids, 1, &DistPublic{[]kyber.Point{KeyGroup.Point()}}, 30*time.Second, 61)
+	sch := scheme.GetSchemeFromEnv()
+
+	group := LoadGroup(ids, 1, &DistPublic{[]kyber.Point{KeyGroup.Point()}}, 30*time.Second, 61, sch, "test_beacon")
 	require.Nil(t, group.UnsignedIdentities())
 
 	ids[0].Signature = nil
@@ -112,7 +117,9 @@ func TestGroupSaveLoad(t *testing.T) {
 	n := 3
 	ids := newIds(n)
 	dpub := []kyber.Point{KeyGroup.Point().Pick(random.New())}
-	group := LoadGroup(ids, 1, &DistPublic{dpub}, 30*time.Second, 61)
+	sch := scheme.GetSchemeFromEnv()
+
+	group := LoadGroup(ids, 1, &DistPublic{dpub}, 30*time.Second, 61, sch, "test_beacon")
 	group.Threshold = 3
 	group.Period = time.Second * 4
 	group.GenesisTime = time.Now().Add(10 * time.Second).Unix()
@@ -125,7 +132,7 @@ func TestGroupSaveLoad(t *testing.T) {
 	require.NotNil(t, gtoml.PublicKey)
 
 	// faking distributed public key coefficients
-	groupFile, err := ioutil.TempFile("", "group.toml")
+	groupFile, err := os.CreateTemp("", "group.toml")
 	require.NoError(t, err)
 	groupPath := groupFile.Name()
 	groupFile.Close()
@@ -154,7 +161,9 @@ func makeGroup(t *testing.T) *Group {
 	t.Helper()
 
 	fakeKey := KeyGroup.Point().Pick(random.New())
-	group := LoadGroup([]*Node{}, 1, &DistPublic{Coefficients: []kyber.Point{fakeKey}}, 30*time.Second, 0)
+	sch := scheme.GetSchemeFromEnv()
+
+	group := LoadGroup([]*Node{}, 1, &DistPublic{Coefficients: []kyber.Point{fakeKey}}, 30*time.Second, 0, sch, "test_beacon")
 	group.Threshold = MinimumT(0)
 	return group
 }
@@ -164,8 +173,9 @@ func TestConvertGroup(t *testing.T) {
 	group.Period = 5 * time.Second
 	group.TransitionTime = time.Now().Unix()
 	group.GenesisTime = time.Now().Unix()
+	version := common.Version{Major: 0, Minor: 0, Patch: 0}
 
-	proto := group.ToProto()
+	proto := group.ToProto(version)
 	received, err := GroupFromProto(proto)
 	require.NoError(t, err)
 	require.True(t, received.Equal(group))

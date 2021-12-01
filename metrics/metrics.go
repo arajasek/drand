@@ -237,9 +237,9 @@ type PeerHandler func(ctx context.Context) (map[string]http.Handler, error)
 
 // Start starts a prometheus metrics server with debug endpoints.
 func Start(metricsBind string, pprof http.Handler, peerHandler PeerHandler) net.Listener {
-	log.DefaultLogger().Debug("metrics", "private listener started", "at", metricsBind)
+	log.DefaultLogger().Debugw("", "metrics", "private listener started", "at", metricsBind)
 	if err := bindMetrics(); err != nil {
-		log.DefaultLogger().Warn("metrics", "metric setup failed", "err", err)
+		log.DefaultLogger().Warnw("", "metrics", "metric setup failed", "err", err)
 		return nil
 	}
 
@@ -248,7 +248,7 @@ func Start(metricsBind string, pprof http.Handler, peerHandler PeerHandler) net.
 	}
 	l, err := net.Listen("tcp", metricsBind)
 	if err != nil {
-		log.DefaultLogger().Warn("metrics", "listen failed", "err", err)
+		log.DefaultLogger().Warnw("", "metrics", "listen failed", "err", err)
 		return nil
 	}
 	s := http.Server{Addr: l.Addr().String()}
@@ -269,7 +269,7 @@ func Start(metricsBind string, pprof http.Handler, peerHandler PeerHandler) net.
 	})
 	s.Handler = mux
 	go func() {
-		log.DefaultLogger().Warn("metrics", "listen finished", "err", s.Serve(l))
+		log.DefaultLogger().Warnw("", "metrics", "listen finished", "err", s.Serve(l))
 	}()
 	return l
 }
@@ -288,13 +288,13 @@ type lazyPeerHandler struct {
 
 func (l *lazyPeerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	addr := strings.Replace(r.URL.Path, "/peer/", "", 1)
-	if strings.Contains(addr, "/") {
-		addr = addr[:strings.Index(addr, "/")]
+	if index := strings.Index(addr, "/"); index != -1 {
+		addr = addr[:index]
 	}
 
 	handlers, err := l.peerHandler(r.Context())
 	if err != nil {
-		log.DefaultLogger().Warn("metrics", "failed to get peer handlers", "err", err)
+		log.DefaultLogger().Warnw("", "metrics", "failed to get peer handlers", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
